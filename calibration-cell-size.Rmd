@@ -1,0 +1,846 @@
+---
+title: "Single-calibration cell size measurement with flow cytometry"
+author: Philip Davies, Massimo Cavallaro, Daniel Hebenstreit
+output:
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+date: "2024-07-29"
+---
+output:
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+date: "2024-03-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Define functions and import flow-cytometry data
+
+```{r}
+library(flowCore)
+library(magrittr)
+set.seed(1)
+```
+
+```{r cache=TRUE}
+# define function to import data
+facs_path <- "~/CellSize/CellSize/untitled folder/"
+foldrs <- list.files(facs_path)
+FACS <- lapply(foldrs,
+                function(folder)
+                {
+                  path <- paste0(facs_path, folder, "/")
+                  files <- list.files(path)
+                  names(files) <- files
+                  lapply(files,
+                         function(gate)
+                         {
+                           path2 <- paste0(path, gate)
+                           data.frame(exprs(read.FCS(path2))) 
+                         })
+                })
+
+names(FACS) <- foldrs
+
+plot_sub <- function(xx, yy, K = 10000, ...)
+{
+  rows <- sample(1:length(xx), K)
+  plot(xx[rows], yy[rows], ...)
+}
+
+points_sub <- function(xx, yy, K = 10000, ...)
+{
+  rows <- sample(1:length(xx), K)
+  points(xx[rows], yy[rows], ...)
+}
+```
+
+
+
+```{r}
+# do some gating (remove cells with fluorescence signals at FACS cutoff)
+idx1 = FACS$laser_settings1$`Specimen_001_testSSCW-H_001.fcs`$FSC.A < 200000
+idx2 = FACS$laser_settings1$`Specimen_001_testSSCW-H_001.fcs`$FSC.A > 50000
+idx3 = FACS$laser_settings1$`Specimen_001_testSSCW-H_001.fcs`$SSC.A < 250000
+idx = idx1 & idx2 & idx3
+las1 = FACS$laser_settings1$`Specimen_001_testSSCW-H_001.fcs`[idx,]
+
+idx1 = FACS$laser_settings2$`Specimen_001_testSSCW-H_001.fcs`$FSC.A < 200000
+idx2 = FACS$laser_settings2$`Specimen_001_testSSCW-H_001.fcs`$FSC.A > 70000
+idx = idx1 & idx2 
+las2 = FACS$laser_settings2$`Specimen_001_testSSCW-H_001.fcs`[idx,]
+```
+
+
+```{r}
+# define function to transform data
+findTransformCoeff<-function(feature.las1, feature.las2, na.rm=TRUE){
+  las1 = c(mean(feature.las1, na.rm=na.rm), sd(feature.las1, na.rm=na.rm))
+  las2 = c(mean(feature.las2, na.rm=na.rm), sd(feature.las2, na.rm=na.rm))
+  las1<-as.matrix(las1, ncols=1)
+  las2<-cbind( c(1, 0), as.matrix(las2, ncols=1))
+  solve(las2, las1)
+}
+findTransformCoeff.boot<-function(feature.las1, feature.las2, n_boot=10, na.rm=TRUE){
+  transf<-function(feature.las1, feature.las2, na.rm){
+    boot1 = sample(feature.las1, size=length(feature.las1), replace=T)
+    boot2 = sample(feature.las2, size=length(feature.las2), replace=T)
+    findTransformCoeff(boot1, boot2, na.rm)
+  }
+  samples = replicate(n_boot, transf(feature.las1, feature.las2, na.rm), simplify = T)
+  res = matrix(c(mean(samples[1,]), mean(samples[2,]), sd(samples[1,]), sd(samples[2,])), nrow=2)
+  colnames(res) = c("mean (best estim.)", "SE of the mean")
+  rownames(res) = c("alpha_i0", "alpha_i1")
+  return(res)
+}
+transform<-function(data, coef){
+  alpha_00 = coef[1,1]
+  alpha_i0 = coef[2,1]
+  return(alpha_i0 * data  + alpha_00)
+}
+
+rmse <- function(x,y){
+  # root mean squared error
+  sqrt( sum((x - y)^2) / length(x))
+}
+
+F.test<-function(prediction.1, prediction.2, true.values){
+  # test if `prediction.2` is significantly better than `prediction.1` (F-score > 1)
+  RSS1 = sum((true.values - prediction.1)^2)
+  RSS2 = sum((true.values - prediction.2)^2)
+  # RSS is "Residual sum of squares" (a.k.a. sum of squared estimate of errors, SSE)
+  n = length(true.values)
+  F. = RSS1 / RSS2
+  p.value <- pf(F., n-1, n-1, lower.tail = FALSE)
+  data.frame(F = F., p.value=p.value)
+}
+
+
+# F.test<-function(prediction.1, prediction.2, true.values){
+#   #this second function is consistent with var.test:
+#   RSS1 = sum((true.values - prediction.1 -  mean(true.values - prediction.1))^2)
+#   n = length(true.values)
+#   RSS2 = sum((true.values - prediction.2 - mean(true.values - prediction.2))^2)
+#   F. = RSS1 / RSS2
+#   p.value <- pf(F., n-1, n-1, lower.tail = FALSE)
+#   data.frame(F = F., p.value=p.value)
+# }
+```
+
+```{r}
+d1 = density(las1$SSC.A)
+d2 = density(las2$SSC.A)
+plot(c(d1$x, d2$x), c(d1$y, d2$y), type='n',
+     main = "SSC.A", xlab='Signal intensity [a.u.]', ylab='Density')
+lines(d1, col = 1)
+lines(d2, col = 2)
+legend("topright", legend = c("Laser setup 1", "Laser setup 2"),
+       col = c(1, 2), lty = 1, bty = "n")
+
+d1 = density(las1$FSC.A)
+d2 = density(las2$FSC.A)
+plot(c(d1$x, d2$x), c(d1$y, d2$y), type='n',
+     main = "FSC.A", xlab='Signal intensity [a.u.]', ylab='Density')
+lines(d1, col = 1)
+lines(d2, col = 2)
+legend("topright", legend = c("Laser setup 1", "Laser setup 2"),
+       col = c(1, 2), lty = 1, bty = "n")
+
+# find coefficients to transform las1 to las2
+coef = findTransformCoeff.boot(las2$SSC.A, las1$SSC.A)
+print(coef)
+
+d1 = density(las2$SSC.A)
+d2 = density(transform(las1$SSC.A, coef))
+plot(c(d1$x, d2$x), c(d1$y, d2$y), type='n',
+     main = "SSC.A", xlab='Signal intensity [a.u.]', ylab='Density')
+lines(d1, col = 2)
+lines(d2, col = 1)
+legend("topright", legend = c("Laser setup 2", "Laser setup 1 (transformed)"),
+       col = c(2, 1), lty = 1, bty = "n")
+
+# plot(density(las2$SSC.A))
+# lines(density(transform(las1$SSC.A, coef)), col='red')
+ 
+ 
+coef = findTransformCoeff.boot(las2$FSC.A, las1$FSC.A)
+print(coef)
+
+d1 = density(las2$FSC.A)
+d2 = density(transform(las1$FSC.A, coef))
+plot(c(d1$x, d2$x), c(d1$y, d2$y), type='n',
+     main = "FSC.A", xlab='Signal intensity [a.u.]', ylab='Density')
+lines(d1, col = 2)
+lines(d2, col = 1)
+legend("topright", legend = c("Laser setup 2", "Laser setup 1 (transformed)"),
+       col = c(2, 1), lty = 1, bty = "n")
+
+# plot(density(las2$FSC.A))
+# lines(density(transform(las1$FSC.A, coef)), col='red')
+```
+
+# Load the MoxiZ  measurements
+
+In a new data sets, measurements from MoxiZ  where collated with those from the FACS, for each gating window
+used to selected the single cells whose size were measured.
+Note that the single-cell size measures do not correspond to single-cell
+FACS reads. We will need to take the average of MoxiZ  measurement for each gating window.
+
+```{r, cache=TRUE}
+load("~/CellSize/CellSize/prepared/las1_FSCW_FSCH_facs_moxi")
+load("~/CellSize/CellSize/prepared/las1_SSCW_SSCH_facs_moxi")
+#
+load("~/CellSize/CellSize/prepared/las2_FSCW_FSCH_facs_moxi")
+load("~/CellSize/CellSize/prepared/las2_SSCW_SSCH_facs_moxi")
+```
+
+```{r}
+las1_full.withmoxiz = rbind(
+  las1_FSCW_FSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_FSCW_FSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_FSCW_FSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_FSCW_FSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_SSCW_SSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_SSCW_SSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_SSCW_SSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las1_SSCW_SSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')]
+  )
+las2_full.withmoxiz = rbind(
+  las2_FSCW_FSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_FSCW_FSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_FSCW_FSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_FSCW_FSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_SSCW_SSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_SSCW_SSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_SSCW_SSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')],
+  las2_SSCW_SSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'sizes')]
+  )
+```
+
+# Idea and illustration on average scatter signals
+
+```{r}
+las1_halfA <- sapply(las1_FSCW_FSCH_facs_moxi, function(x)
+  {
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las1_halfB <- sapply(las1_SSCW_SSCH_facs_moxi, function(x)
+  {
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las1_full.mean <- t(cbind(las1_halfA, las1_halfB))
+
+colnames(las1_full.mean) = c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W', 'mean.size')
+
+las1_full.mean = as.data.frame(las1_full.mean)
+las1_full.mean
+```
+
+```{r}
+las2_halfA <- sapply(las2_FSCW_FSCH_facs_moxi, function(x)
+  {
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las2_halfB <- sapply(las2_SSCW_SSCH_facs_moxi, function(x)
+  {
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las2_full.mean <- t(cbind(las2_halfA, las2_halfB))
+colnames(las2_full.mean) = c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W', 'mean.size')
+
+las2_full.mean = as.data.frame(las2_full.mean)
+las2_full.mean
+```
+
+Taken one by one, intensity signals appear to be linearly associated with the size measured by the MoxiZ  (with the exception of FSC.H)
+
+```{r}
+for (s in c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W')){
+  model = lm(as.formula(sprintf('mean.size ~ %s', s)), data = las1_full.mean)
+  print(summary(model)$coef)
+}
+for (s in c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W')){
+  model = lm(as.formula(sprintf('mean.size ~ %s', s)), data = las2_full.mean)
+  print(summary(model)$coef)
+}
+```
+
+Here we are interested in predicting the size using all information available rather than selecting which single FACS variable is the best predictor.
+
+## Model fit with laser settings 1
+
+```{r}
+lm1 <- lm(mean.size ~ mean.FSC.H + mean.FSC.W + mean.SSC.H + mean.SSC.W, data = las1_full.mean)
+print(summary(lm1))
+```
+
+```{r}
+lm2 <- lm(mean.size ~ mean.FSC.H + mean.FSC.W + mean.SSC.H + mean.SSC.W, data = las2_full.mean)
+print(summary(lm2))
+```
+
+If we compare true MoxiZ  sizes with the sizes predicted by `lm1` using flow-cytometry in laser setting 1 we get this:
+
+```{r}
+pred_las1_las1 <- predict(lm1, las1_full.mean, interval = "prediction")
+plot(las1_full.mean$mean.size, pred_las1_las1[,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]")
+     )
+lines(c(10, 30), c(10, 30))
+```
+
+```{r}
+RMSE <- rmse(las1_full.mean$mean.size , pred_las1_las1[,1])
+print( sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+If we predict the sizes of cells with `lm1`, but now from measures taken with laser setting 2, we get this:
+
+```{r}
+pred_las1_las2 <- predict(lm1, las2_full.mean, interval = "prediction")
+plot(las2_full.mean$mean.size, pred_las1_las2[,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]"),
+     )
+lines(c(10, 30), c(10, 30))
+```
+
+```{r}
+RMSE <- rmse(las2_full.mean$mean.size, pred_las1_las2[,1])
+print( sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+The important parameter is the root mean squared error (RMSE), that is the average difference between predicted and true values. Comparing the two RMSEs above we can see that predictions from one laser settings poorly match the signal obtained with the other laser settings.
+
+
+We now check whether transforming the FACS values improves the predictions.
+
+Get the transformation coefficients (or conversion factors) from laser setting 2 to laser setting 1.
+
+```{r}
+channels <- c("FSC.H","FSC.W","SSC.H","SSC.W")
+coef_las1_las2 <- Map(findTransformCoeff.boot, las1_full.withmoxiz[channels], las2_full.withmoxiz[channels])
+coef_las1_las2
+```
+
+Now we apply these to the data prepared with laser setting 2, i.e., transform setting 2 data in order to make it compatible with laser setting 1.
+
+```{r}
+las2_all.transformed <- lapply(c(las2_FSCW_FSCH_facs_moxi,
+                                          las2_SSCW_SSCH_facs_moxi),
+  function(x) {
+  x$FSC.H <- transform(x$FSC.H , coef_las1_las2$FSC.H)
+  x$FSC.W <- transform(x$FSC.W , coef_las1_las2$FSC.W)
+  x$SSC.H <- transform(x$SSC.H , coef_las1_las2$SSC.H)
+  x$SSC.W <- transform(x$SSC.W , coef_las1_las2$SSC.W)
+  x
+  })
+
+las2_all.transformed <- sapply(las2_all.transformed, function(x)
+  {
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las2_all.transformed <- as.data.frame(t(las2_all.transformed))
+colnames(las2_all.transformed) = c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W', 'mean.size')
+las2_all.transformed
+```
+
+Now we check how well the model `lm1` predicts the sizes, using transformed laser 2 values.
+
+```{r}
+pred <- predict(lm1, las2_all.transformed, interval = "prediction")
+# plot(las2_all.transformed$mean.size, pred[,1],
+#      xlab = expression("Mean cell diameter [" * mu * "m]"),
+#      ylab = expression("Predicted value [" * mu * "m]"),
+#      type='n'
+#      )
+# points(las2_all.transformed$mean.size, pred[,1])
+# lines(c(10, 30), c(10, 30))
+ 
+RMSE <- rmse(las2_all.transformed$mean.size, pred[,1])
+print(sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+Correction successful!
+
+<!-- Compare that to the value of 2.3 of the 'uncorrected', the value 1.3 is an improvement and almost equal to the prediction on the actual fitted data, 0.98. -->
+
+
+We also check the result using the coefficients computed using the whole FACS data (not only cells processed with MoxiZ ).
+This should make things better!
+
+```{r}
+channels <- c("FSC.H","FSC.W","SSC.H","SSC.W")
+# coef_las1_las2 <- Map(findTransformCoeff.boot, las1_full.withmoxiz[channels], las2_full.withmoxiz[channels])
+coef_las1_las2_ <- Map(findTransformCoeff.boot, las1[channels], las2[channels])
+print(coef_las1_las2_) # notice these are a bit different.
+
+las2_all.transformed <- lapply(c(las2_FSCW_FSCH_facs_moxi,
+                                 las2_SSCW_SSCH_facs_moxi),
+  function(x) {
+  x$FSC.H <- transform(x$FSC.H , coef_las1_las2_$FSC.H)
+  x$FSC.W <- transform(x$FSC.W , coef_las1_las2_$FSC.W)
+  x$SSC.H <- transform(x$SSC.H , coef_las1_las2_$SSC.H)
+  x$SSC.W <- transform(x$SSC.W , coef_las1_las2_$SSC.W)
+  x
+  })
+
+las2_all.transformed <- sapply(las2_all.transformed, function(x)
+  {
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las2_all.transformed <- as.data.frame(t(las2_all.transformed))
+colnames(las2_all.transformed) = c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W', 'mean.size')
+
+pred <- predict(lm1, las2_all.transformed, interval = "prediction")
+
+plot(las2_all.transformed$mean.size, pred[,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]"),
+     type='n'
+     )
+points(las2_all.transformed$mean.size, pred[,1])
+lines(c(10, 30), c(10, 30))
+```
+
+```{r}
+RMSE <- rmse(las2_all.transformed$mean.size ,pred[,1])
+print(sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+As expected the error is lower, suggesting that using more FACS data to find the transformation from data set to the other is better.
+
+## Model fit with laser settings 2
+
+We also check how the transformation from las1 to las2 performs.
+
+If we compare true MoxiZ  sizes with the sizes predicted by `lm2` using flow-cytometry in laser setting 2 we get this:
+
+```{r}
+pred_las2_las2 <- predict(lm2, las2_full.mean, interval = "prediction")
+plot(las2_full.mean$mean.size, pred_las2_las2[,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]")
+     )
+lines(c(10, 30), c(10, 30))
+```
+
+```{r}
+RMSE <- rmse(las2_full.mean$mean.size , pred_las2_las2[,1])
+print( sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+If we predict the sizes of cells with `lm2`, but now from measures taken with laser setting 1, we get this:
+
+```{r}
+pred_las2_las1 <- predict(lm2, las1_full.mean, interval = "prediction")
+plot(las1_full.mean$mean.size, pred_las2_las1[,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]"),
+     )
+lines(c(10, 30), c(10, 30))
+```
+
+Finally, we transform data from laser settings 1 to laser settings 3 and then use `lm2` to make predictions
+
+
+```{r}
+coef_las2_las1 <- Map(findTransformCoeff.boot, las2[channels], las1[channels])
+
+las1_all.transformed <- lapply(c(las1_FSCW_FSCH_facs_moxi,
+                                          las1_SSCW_SSCH_facs_moxi),
+  function(x){
+  x$FSC.H <- transform(x$FSC.H , coef_las2_las1$FSC.H)
+  x$FSC.W <- transform(x$FSC.W , coef_las2_las1$FSC.W)
+  x$SSC.H <- transform(x$SSC.H , coef_las2_las1$SSC.H)
+  x$SSC.W <- transform(x$SSC.W , coef_las2_las1$SSC.W)
+  x
+  })
+
+las1_all.transformed <- sapply(las1_all.transformed, function(x){
+  apply(x[c("FSC.H","FSC.W","SSC.H","SSC.W","sizes")], 2, mean)
+  })
+
+las1_all.transformed <- as.data.frame(t(las1_all.transformed))
+names(las1_all.transformed) =  c('mean.FSC.H', 'mean.FSC.W', 'mean.SSC.H', 'mean.SSC.W', 'mean.size')
+las1_all.transformed
+```
+
+```{r}
+pred <- predict(lm2, las1_all.transformed, interval = "prediction")
+plot(las1_all.transformed$mean.size, pred[,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]"),
+     )
+points(las1_all.transformed$mean.size, pred[,1])
+lines(c(10, 30), c(10, 30))
+```
+
+```{r}
+RMSE <- rmse(las1_all.transformed$mean.size, pred[,1])
+print(sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+# Test the linear fits using all cells!
+
+Assign a mean MoxiZ  size to each cell. 
+Here we record also the standard deviations (Sds). These can be used as "weights" in `lm()` (the larger the dispersion, the smaller the cell-group weight in the calibration step). However, for this dataset we did not find any substantial advantage in performing weigher linear regression over standard linear regression (since all the Sds are similar).
+
+```{r}
+writeLines('Settings, Mean, Sd, lower, upper, N.cells')
+for (i in 1:4){
+  Mean = mean(las1_FSCW_FSCH_facs_moxi[[i]]$sizes)
+  Sd = sd(las1_FSCW_FSCH_facs_moxi[[i]]$sizes)
+  N = nrow(las1_FSCW_FSCH_facs_moxi[[i]])
+  lower = quantile(las1_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.05)
+  upper = quantile(las1_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.95)
+  writeLines(sprintf("1, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper, N))
+  las1_FSCW_FSCH_facs_moxi[[i]]$mean.size = Mean
+  las1_FSCW_FSCH_facs_moxi[[i]]$sd.size = Sd
+
+  Mean = mean(las1_SSCW_SSCH_facs_moxi[[i]]$sizes)
+  Sd = sd(las1_SSCW_SSCH_facs_moxi[[i]]$sizes)
+  N = nrow(las1_SSCW_SSCH_facs_moxi[[i]])
+  lower = quantile(las1_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.05)
+  upper = quantile(las1_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.95)  
+  writeLines(sprintf("1, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper, N))  
+  las1_SSCW_SSCH_facs_moxi[[i]]$mean.size = Mean
+  las1_SSCW_SSCH_facs_moxi[[i]]$sd.size = Sd
+  
+  Mean = mean(las2_FSCW_FSCH_facs_moxi[[i]]$sizes)
+  Sd = sd(las2_FSCW_FSCH_facs_moxi[[i]]$sizes)
+  N = nrow(las2_FSCW_FSCH_facs_moxi[[i]])
+  lower = quantile(las2_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.05)
+  upper = quantile(las2_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.95)  
+  writeLines(sprintf("2, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper, N))  
+  las2_FSCW_FSCH_facs_moxi[[i]]$mean.size = Mean
+  las2_FSCW_FSCH_facs_moxi[[i]]$sd.size = Sd
+  
+  Mean = mean(las2_SSCW_SSCH_facs_moxi[[i]]$sizes)
+  Sd = sd(las2_SSCW_SSCH_facs_moxi[[i]]$sizes)
+  N = nrow(las2_SSCW_SSCH_facs_moxi[[i]])
+  lower = quantile(las2_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.05)
+  upper = quantile(las2_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.95)    
+  writeLines(sprintf("2, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper,  N))  
+  las2_SSCW_SSCH_facs_moxi[[i]]$mean.size = Mean
+  las2_SSCW_SSCH_facs_moxi[[i]]$sd.size = Sd
+}
+```
+
+```{r}
+las1_full.withmoxiz = rbind(
+  las1_FSCW_FSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_FSCW_FSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_FSCW_FSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_FSCW_FSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_SSCW_SSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_SSCW_SSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_SSCW_SSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las1_SSCW_SSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')]
+  )
+las2_full.withmoxiz = rbind(
+  las2_FSCW_FSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_FSCW_FSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_FSCW_FSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_FSCW_FSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_SSCW_SSCH_facs_moxi[[1]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_SSCW_SSCH_facs_moxi[[2]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_SSCW_SSCH_facs_moxi[[3]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')],
+  las2_SSCW_SSCH_facs_moxi[[4]][,c('FSC.H','FSC.W','SSC.H', 'SSC.W', 'mean.size', 'sd.size')]
+  )
+```
+
+We will fit the models to the 80% of all cells and use the remaining 20% to calculate the RMSEs.
+
+```{r}
+idx1 = sample(1:nrow(las1_full.withmoxiz), size=as.integer(0.8 * nrow(las1_full.withmoxiz)))
+idx2 = sample(1:nrow(las2_full.withmoxiz), size=as.integer(0.8 * nrow(las2_full.withmoxiz)))
+```
+
+
+## Model fit with laser settings 1
+
+```{r}
+# standard linear model
+lm1 = lm(mean.size ~  FSC.H + FSC.W + SSC.H + SSC.W, data = las1_full.withmoxiz[idx1,])
+# weighted linear model
+wlm1 = lm(mean.size ~  FSC.H + FSC.W + SSC.H + SSC.W, data = las1_full.withmoxiz[idx1,], weights = 1 / las1_full.withmoxiz[idx1,]$sd.size)
+print(summary(lm1))
+print(summary(wlm1))
+```
+
+```{r}
+pred_lm1_las1 = predict(lm1, las1_full.withmoxiz, interval = "prediction")
+#pred_lm1_las1_ = predict(wlm1, las1_full.withmoxiz, interval = "prediction")
+#
+plot(las1_full.withmoxiz[-idx1,5], pred_lm1_las1[-idx1,1],
+     xlab = expression("Mean cell diameter from MoxiZ [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]"),
+     cex=0.3, pch=19)
+lines(c(10,30),c(10,30))
+```
+
+ 
+
+```{r}
+RMSE <- rmse(las1_full.withmoxiz[-idx1, 5] ,  pred_lm1_las1[-idx1, 1])
+writeLines( sprintf("The root mean squared error (setting 1, lm1) is %.3f", RMSE))
+# RMSE_ <- rmse(las1_full.withmoxiz[-idx1, 5] ,  pred_lm1_las1_[-idx1, 1])
+# print(sprintf("The root mean squared error is %.3f", RMSE_))
+```
+
+```{r}
+# # adding weights did not significantly improve anything so we will scrap this
+# wpred = predict(wlm1, las1_full.withmoxiz, interval = "prediction", weights = 1 / las1_full.withmoxiz$sd.size)
+# plot(las1_full.withmoxiz[,5], wpred[,1],
+#      xlab = expression("Mean cell diameter [" * mu * "m]"),
+#      ylab = expression("Predicted value [" * mu * "m]"),
+#      cex=0.3, pch=19)
+# lines(c(10,30),c(10,30))
+# 
+# RMSE <- rmse(las1_full.withmoxiz[-idx1, 5] ,  wpred[-idx1, 1])
+# print(sprintf("The root mean squared error is %.2f", RMSE))
+```
+
+
+## Model fit with laser settings 2
+
+```{r}
+lm2 = lm(mean.size ~  FSC.H + FSC.W + SSC.H + SSC.W, data = las2_full.withmoxiz[idx2,])
+print(summary(lm2))
+```
+
+```{r}
+pred_lm2_las2 = predict(lm2, las2_full.withmoxiz, interval = "prediction")
+plot(las2_full.withmoxiz[-idx2,5], pred_lm2_las2[-idx2,1],
+     xlab = expression("Mean cell diameter [" * mu * "m]"),
+     ylab = expression("Predicted value [" * mu * "m]"),
+     cex=0.3, pch=19)
+lines(c(10,30),c(10,30))
+```
+
+
+```{r}
+RMSE <- rmse(las2_full.withmoxiz[-idx2, 5],  pred_lm2_las2[-idx2, 1])
+writeLines(sprintf("The root mean squared error (setting 2, lm2) is %.2f", RMSE))
+```
+
+## las 1, lm2
+
+
+Let us compare the size predicted using data from laser setting 1, but model `lm2` (fitted with data from laser setting 2). We expect larger RMSEs than using `lm1` over laser settings 1.
+
+```{r}
+pred_lm2_las1<- predict(lm2, las1_full.withmoxiz, interval = "prediction")
+# # no need to plot this (and it looks similar to the previous plot)
+# plot(las1_full.withmoxiz$mean.size, pred_lm2_las1[,1],
+#      xlab = expression("Mean cell diameter [" * mu * "m]"),
+#      ylab = expression("Predicted value [" * mu * "m]"),
+#      pch=19,
+#      cex=0.4)
+# lines(c(10, 30), c(10, 30))
+```
+
+
+
+Based on the RMSEs,
+predicting size using laser settings 1  and model `lm1` (`pred_lm1_las1`) performs significantly better than using laser settings 1 and model `lm2` ( `pred_lm2_las1`) (RMSE significantly smaller, F-score > 1, p approx 0):
+
+```{r}
+RMSE <- rmse(las1_full.withmoxiz[-idx1,]$mean.size, pred_lm2_las1[-idx1, 1])
+writeLines( sprintf("The root mean squared error (setting 1, lm2) is %.2f", RMSE))
+RMSE <- rmse(las1_full.withmoxiz[-idx1,]$mean.size, pred_lm1_las1[-idx1, 1])
+writeLines( sprintf("The root mean squared error (setting 1, lm1) is %.2f", RMSE))
+F.test(pred_lm2_las1[-idx1, 1], pred_lm1_las1[-idx1, 1], las1_full.withmoxiz[-idx1,]$mean.size)
+```
+Here we subset with `-idx1` because `lm1` was trained on laser setting 1 and `idx1`, and we need to exclude these data to compare its performace on laser setting 1 data with anything else. 
+
+
+## las 1 transf., lm2
+
+We now check whether transforming the FACS values from laser setting 1 improves the predictions of `lm2`.
+Get the transformation coefficients (or conversion factors) from laser setting 1 to laser setting 2.
+
+
+```{r}
+# Transformation coefficient from laser setting 1 to laser setting 2
+coef_las2_las1_ <- Map(findTransformCoeff.boot, las2[channels], las1[channels])
+```
+
+Transform laser setting 1 data in order to make it compatible with laser setting 2.
+
+```{r}
+las1_full.transformed.withmoxiz = las1_full.withmoxiz
+las1_full.transformed.withmoxiz$FSC.H <- transform(las1_full.transformed.withmoxiz$FSC.H , coef_las2_las1_$FSC.H)
+las1_full.transformed.withmoxiz$FSC.W <- transform(las1_full.transformed.withmoxiz$FSC.W , coef_las2_las1_$FSC.W)
+las1_full.transformed.withmoxiz$SSC.H <- transform(las1_full.transformed.withmoxiz$SSC.H , coef_las2_las1_$SSC.H)
+las1_full.transformed.withmoxiz$SSC.W <- transform(las1_full.transformed.withmoxiz$SSC.W , coef_las2_las1_$SSC.W)
+```
+
+```{r}
+pred_lm2_las1tr <- predict(lm2, las1_full.transformed.withmoxiz, interval = "prediction")
+# # no need to plot this (and it looks similar to the previous plot) 
+# plot(las1_full.transformed.withmoxiz$mean.size, pred_lm2_las1tr[,1],
+#      xlab = expression("Mean cell diameter [" * mu * "m]"),
+#      ylab = expression("Predicted value [" * mu * "m]"),
+#      pch=19,
+#      cex=0.4)
+# lines(c(10, 30), c(10, 30))
+```
+
+
+The new fit is significantly better than the former (smaller RMSE, F-score > 1, p << 0.05).
+
+```{r}
+RMSE <- rmse(las1_full.withmoxiz[-idx1,]$mean.size,  pred_lm2_las1[-idx1,1])
+writeLines( sprintf("The root mean squared error (setting 1, lm2) is %.2f", RMSE))
+RMSE <- rmse(las1_full.withmoxiz[-idx1,]$mean.size,  pred_lm2_las1tr[-idx1,1])
+writeLines( sprintf("The root mean squared error (setting 1 transformed, lm2) is %.2f", RMSE))
+F.test(pred_lm2_las1[-idx1,1], pred_lm2_las1tr[-idx1,1], las1_full.withmoxiz[-idx1,]$mean.size)
+```
+
+## las 2, lm1
+
+Let us compare the size predicted using data from laser setting 2, but model `lm1` (fitted with data from laser setting 1). We expect larger RMSEs than using `lm2` over laser setting 2.
+
+```{r}
+pred_lm1_las2 <- predict(lm1, las2_full.withmoxiz, interval = "prediction")
+# # no need to plot this (and it looks similar to the previous plot)
+plot(las2_full.withmoxiz$mean.size, pred_lm1_las2[,1],
+      xlab = expression("Mean cell diameter [" * mu * "m]"),
+      ylab = expression("Predicted value [" * mu * "m]"),
+      cex=0.3, pch=19, col=rgb(0,0,0,alpha=0.1),
+      )
+lines(c(10,30), c(10,30))
+```
+
+The plots do  not visually highlight substantial differences, but based on the RMSEs,
+predicting size using laser settings 2  and model `lm2` (`pred_lm2_las2`) still performs significantly better than using laser settings 2 and model `lm1` ( `pred_lm1_las2`) (RMSE significantly smaller, F-score > 1, p approx 0):
+```{r}
+RMSE <- rmse(las2_full.withmoxiz[-idx2,]$mean.size, pred_lm1_las2[-idx2, 1])
+writeLines( sprintf("The root mean squared error (settings 2, lm1) is %.2f", RMSE))
+RMSE <- rmse(las2_full.withmoxiz[-idx2,]$mean.size, pred_lm2_las2[-idx2, 1])
+writeLines( sprintf("The root mean squared error (settings 2, lm2) is %.2f", RMSE))
+#
+F.test(pred_lm1_las2[-idx2, 1], pred_lm2_las2[-idx2, 1], las2_full.withmoxiz[-idx2,]$mean.size)
+```
+
+Here we subset with `-idx2` because `lm2` was trained on laser setting 2 and `idx2`, and we need to exclude these data for validation. 
+
+## las 2 transf., lm1
+
+We now check whether transforming the FACS values from laser setting 2 improves the predictions of `lm1`.
+Get the transformation coefficients (or conversion factors) from laser setting 2 to laser setting 1.
+
+```{r}
+channels <- c("FSC.H","FSC.W","SSC.H","SSC.W")
+# # compute the transf. coefficient using the gated FACS data
+# coef_las1_las2 <- Map(findTransformCoeff.boot, las1_full.withmoxiz[channels], las2_full.withmoxiz[channels])
+# compute the transf. coefficient using the complete FACS data
+coef_las1_las2_ <- Map(findTransformCoeff.boot, las1[channels], las2[channels])
+```
+
+Transform laser setting 2 data in order to make it compatible with laser setting 1.
+```{r}
+las2_full.transformed.withmoxiz = las2_full.withmoxiz
+las2_full.transformed.withmoxiz$FSC.H <- transform(las2_full.transformed.withmoxiz$FSC.H , coef_las1_las2_$FSC.H)
+las2_full.transformed.withmoxiz$FSC.W <- transform(las2_full.transformed.withmoxiz$FSC.W , coef_las1_las2_$FSC.W)
+las2_full.transformed.withmoxiz$SSC.H <- transform(las2_full.transformed.withmoxiz$SSC.H , coef_las1_las2_$SSC.H)
+las2_full.transformed.withmoxiz$SSC.W <- transform(las2_full.transformed.withmoxiz$SSC.W , coef_las1_las2_$SSC.W)
+```
+
+Now we check how well the model `lm1` predicts the sizes, using transformed laser 2 values.
+
+```{r}
+pred_lm1_las2tr <- predict(lm1, las2_full.transformed.withmoxiz, interval = "prediction")
+# # no need to plot this (and it looks similar to the previous plot) 
+# plot(las2_full.transformed.withmoxiz$mean.size, pred_lm1_las2tr[,1],
+#      xlab = expression("Mean cell diameter [" * mu * "m]"),
+#      ylab = expression("Predicted value [" * mu * "m]"),
+#      pch=19,
+#      cex=0.4)
+# lines(c(10, 30), c(10, 30))
+```
+
+The size predicted using the transformed data is significantly better than the former prediction, the RMSE is significantly smaller (F-score > 1, p << 0.05)
+
+```{r}
+RMSE <- rmse(las2_full.withmoxiz[-idx2,]$mean.size, pred_lm1_las2[-idx2, 1])
+writeLines( sprintf("The root mean squared error (settings 2, lm1) is %.2f", RMSE))
+RMSE <- rmse(las2_full.withmoxiz[-idx2, ]$mean.size , pred_lm1_las2tr[-idx2,1])
+writeLines( sprintf("The root mean squared error (settings 2 transformed, lm1) is %.2f", RMSE))
+F.test(pred_lm1_las2[-idx2, 1], pred_lm1_las2tr[-idx2, 1], las2_full.withmoxiz[-idx2,]$mean.size)
+```
+
+
+# Error bars plots
+
+The procedure also provides confidence limits on the predicted size.
+Let us plot predicted size vs scatter light intensity for a random sample of cells. Y-axis error bars correspond to the confidence intervals of each predicted sizes.
+The CIs of the predicted values is consistent with those from MoxiZ  measurements (see above).
+
+Laser setting 1:
+
+```{r}
+subset = sample(1:length(las1_full.withmoxiz$SSC.H[idx1]), 100)
+pred_subset = pred_lm1_las1[subset,]
+plot(las1_full.withmoxiz$SSC.H[subset],
+     pred_subset[,1],
+     cex = 1,
+     ylim = c(min(pred_subset[,2]), max(pred_subset[,3])),
+     xlab = 'SSC.H',
+     ylab = expression("Predicted cell diameter [" * mu * "m]"),
+     pch = 20)
+arrows(las1_full.withmoxiz$SSC.H[subset], pred_subset[,2],
+       las1_full.withmoxiz$SSC.H[subset], pred_subset[,3],
+length = 0.05, angle = 90, code = 3 )
+```
+
+
+Laser setting 2:
+
+```{r}
+subset = sample(1:length(las2_full.withmoxiz$mean.size[idx2]), 100)
+pred_subset = pred_lm2_las2[subset,]
+plot(las2_full.withmoxiz$FSC.W[subset],
+     pred_subset[,1],
+     cex = 1,
+     ylim = c(min(pred_subset[,2]), max(pred_subset[,3])),
+     xlab = 'FSC.W',
+     ylab = expression("Predicted cell diameter [" * mu * "m]"),
+     pch = 20)
+arrows(las2_full.withmoxiz$FSC.W[subset], pred_subset[,2],
+       las2_full.withmoxiz$FSC.W[subset], pred_subset[,3],
+length = 0.05, angle = 90, code = 3 )
+```
+
+
+
+# Individual light scatter signals are associated with cell size
+Note: Taken one by one, intensity signals appear to be associated with the size measured by the MoxiZ  (including FSC.H). And even if taken all together, coefficient estimates are significant.
+
+```{r}
+for (s in c('FSC.H', 'FSC.W', 'SSC.H', 'SSC.W')){
+  model = lm(as.formula(sprintf('mean.size ~ %s', s)), data = as.data.frame(las1_full.withmoxiz))
+  print(summary(model)$coef)
+}
+for (s in c('FSC.H', 'FSC.W', 'SSC.H', 'SSC.W')){
+  model = lm(as.formula(sprintf('mean.size ~ %s', s)), data = as.data.frame(las2_full.withmoxiz))
+  print(summary(model)$coef)
+}
+```
+
+
+
