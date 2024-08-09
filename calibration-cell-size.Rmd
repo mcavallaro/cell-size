@@ -29,7 +29,7 @@ set.seed(1)
 
 ```{r cache=TRUE}
 # define function to import data
-facs_path <- "~/CellSize/CellSize/untitled folder/"
+facs_path <- "~/CellSize/FACS/"
 foldrs <- list.files(facs_path)
 FACS <- lapply(foldrs,
                 function(folder)
@@ -192,11 +192,11 @@ Note that the single-cell size measures do not correspond to single-cell
 FACS reads. We will need to take the average of MoxiZ  measurement for each gating window.
 
 ```{r, cache=TRUE}
-load("~/CellSize/CellSize/prepared/las1_FSCW_FSCH_facs_moxi")
-load("~/CellSize/CellSize/prepared/las1_SSCW_SSCH_facs_moxi")
+load("~/CellSize/las1_FSCW_FSCH_facs_moxi")
+load("~/CellSize/las1_SSCW_SSCH_facs_moxi")
 #
-load("~/CellSize/CellSize/prepared/las2_FSCW_FSCH_facs_moxi")
-load("~/CellSize/CellSize/prepared/las2_SSCW_SSCH_facs_moxi")
+load("~/CellSize/las2_FSCW_FSCH_facs_moxi")
+load("~/CellSize/las2_SSCW_SSCH_facs_moxi")
 ```
 
 ```{r}
