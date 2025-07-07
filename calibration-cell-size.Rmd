@@ -6,30 +6,32 @@ output:
     toc: yes
   word_document:
     toc: yes
-date: "2024-07-29"
+date: "2024-11-26"
 ---
-output:
-  pdf_document:
-    toc: yes
-  word_document:
-    toc: yes
-date: "2024-03-29"
----
+ 
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
 # Define functions and import flow-cytometry data
+
+```{r eval=FALSE, include=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("flowCore")
+```
 
 ```{r}
 library(flowCore)
-library(magrittr)
+#library(magrittr)
 set.seed(1)
+source('utils.R')
 ```
 
 ```{r cache=TRUE}
 # define function to import data
-facs_path <- "~/CellSize/FACS/"
+facs_path <- "~/CellSize/CellSize/untitled folder/"
 foldrs <- list.files(facs_path)
 FACS <- lapply(foldrs,
                 function(folder)
@@ -45,19 +47,7 @@ FACS <- lapply(foldrs,
                          })
                 })
 
-names(FACS) <- foldrs
-
-plot_sub <- function(xx, yy, K = 10000, ...)
-{
-  rows <- sample(1:length(xx), K)
-  plot(xx[rows], yy[rows], ...)
-}
-
-points_sub <- function(xx, yy, K = 10000, ...)
-{
-  rows <- sample(1:length(xx), K)
-  points(xx[rows], yy[rows], ...)
-}
+names(FACS)<-foldrs
 ```
 
 
@@ -77,60 +67,6 @@ las2 = FACS$laser_settings2$`Specimen_001_testSSCW-H_001.fcs`[idx,]
 ```
 
 
-```{r}
-# define function to transform data
-findTransformCoeff<-function(feature.las1, feature.las2, na.rm=TRUE){
-  las1 = c(mean(feature.las1, na.rm=na.rm), sd(feature.las1, na.rm=na.rm))
-  las2 = c(mean(feature.las2, na.rm=na.rm), sd(feature.las2, na.rm=na.rm))
-  las1<-as.matrix(las1, ncols=1)
-  las2<-cbind( c(1, 0), as.matrix(las2, ncols=1))
-  solve(las2, las1)
-}
-findTransformCoeff.boot<-function(feature.las1, feature.las2, n_boot=10, na.rm=TRUE){
-  transf<-function(feature.las1, feature.las2, na.rm){
-    boot1 = sample(feature.las1, size=length(feature.las1), replace=T)
-    boot2 = sample(feature.las2, size=length(feature.las2), replace=T)
-    findTransformCoeff(boot1, boot2, na.rm)
-  }
-  samples = replicate(n_boot, transf(feature.las1, feature.las2, na.rm), simplify = T)
-  res = matrix(c(mean(samples[1,]), mean(samples[2,]), sd(samples[1,]), sd(samples[2,])), nrow=2)
-  colnames(res) = c("mean (best estim.)", "SE of the mean")
-  rownames(res) = c("alpha_i0", "alpha_i1")
-  return(res)
-}
-transform<-function(data, coef){
-  alpha_00 = coef[1,1]
-  alpha_i0 = coef[2,1]
-  return(alpha_i0 * data  + alpha_00)
-}
-
-rmse <- function(x,y){
-  # root mean squared error
-  sqrt( sum((x - y)^2) / length(x))
-}
-
-F.test<-function(prediction.1, prediction.2, true.values){
-  # test if `prediction.2` is significantly better than `prediction.1` (F-score > 1)
-  RSS1 = sum((true.values - prediction.1)^2)
-  RSS2 = sum((true.values - prediction.2)^2)
-  # RSS is "Residual sum of squares" (a.k.a. sum of squared estimate of errors, SSE)
-  n = length(true.values)
-  F. = RSS1 / RSS2
-  p.value <- pf(F., n-1, n-1, lower.tail = FALSE)
-  data.frame(F = F., p.value=p.value)
-}
-
-
-# F.test<-function(prediction.1, prediction.2, true.values){
-#   #this second function is consistent with var.test:
-#   RSS1 = sum((true.values - prediction.1 -  mean(true.values - prediction.1))^2)
-#   n = length(true.values)
-#   RSS2 = sum((true.values - prediction.2 - mean(true.values - prediction.2))^2)
-#   F. = RSS1 / RSS2
-#   p.value <- pf(F., n-1, n-1, lower.tail = FALSE)
-#   data.frame(F = F., p.value=p.value)
-# }
-```
 
 ```{r}
 d1 = density(las1$SSC.A)
@@ -192,11 +128,11 @@ Note that the single-cell size measures do not correspond to single-cell
 FACS reads. We will need to take the average of MoxiZ  measurement for each gating window.
 
 ```{r, cache=TRUE}
-load("~/CellSize/las1_FSCW_FSCH_facs_moxi")
-load("~/CellSize/las1_SSCW_SSCH_facs_moxi")
+load("~/CellSize/CellSize/prepared/las1_FSCW_FSCH_facs_moxi")
+load("~/CellSize/CellSize/prepared/las1_SSCW_SSCH_facs_moxi")
 #
-load("~/CellSize/las2_FSCW_FSCH_facs_moxi")
-load("~/CellSize/las2_SSCW_SSCH_facs_moxi")
+load("~/CellSize/CellSize/prepared/las2_FSCW_FSCH_facs_moxi")
+load("~/CellSize/CellSize/prepared/las2_SSCW_SSCH_facs_moxi")
 ```
 
 ```{r}
@@ -453,7 +389,7 @@ plot(las1_full.mean$mean.size, pred_las2_las1[,1],
 lines(c(10, 30), c(10, 30))
 ```
 
-Finally, we transform data from laser settings 1 to laser settings 3 and then use `lm2` to make predictions
+Finally, we transform data from laser settings 1 to laser settings 2 and then use `lm2` to make predictions
 
 
 ```{r}
@@ -506,7 +442,9 @@ for (i in 1:4){
   N = nrow(las1_FSCW_FSCH_facs_moxi[[i]])
   lower = quantile(las1_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.05)
   upper = quantile(las1_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.95)
-  writeLines(sprintf("1, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper, N))
+  FSCW_mean = mean(las1_FSCW_FSCH_facs_moxi[[i]]$FSC.W)
+  FSCH_mean = mean(las1_FSCW_FSCH_facs_moxi[[i]]$FSC.H)
+  writeLines(sprintf("%d, 1, %.2f, %.2f, %.2f, %.2f, %d, FSCW_mean=%.2f, FSCH_mean=%.2f", i, Mean, Sd, lower, upper, N, FSCW_mean, FSCH_mean))
   las1_FSCW_FSCH_facs_moxi[[i]]$mean.size = Mean
   las1_FSCW_FSCH_facs_moxi[[i]]$sd.size = Sd
 
@@ -514,17 +452,20 @@ for (i in 1:4){
   Sd = sd(las1_SSCW_SSCH_facs_moxi[[i]]$sizes)
   N = nrow(las1_SSCW_SSCH_facs_moxi[[i]])
   lower = quantile(las1_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.05)
-  upper = quantile(las1_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.95)  
-  writeLines(sprintf("1, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper, N))  
+  upper = quantile(las1_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.95)
+  SSCW_mean = mean(las1_SSCW_SSCH_facs_moxi[[i]]$SSC.W)
+  SSCH_mean = mean(las1_SSCW_SSCH_facs_moxi[[i]]$SSC.H)  
+  writeLines(sprintf("%d, 1, %.2f, %.2f, %.2f, %.2f, %d, SSCW_mean=%.2f, SSCH_mean=%.2f", i, Mean, Sd, lower, upper, N, SSCW_mean, SSCH_mean))  
   las1_SSCW_SSCH_facs_moxi[[i]]$mean.size = Mean
   las1_SSCW_SSCH_facs_moxi[[i]]$sd.size = Sd
-  
+}
+for (i in 1:4){
   Mean = mean(las2_FSCW_FSCH_facs_moxi[[i]]$sizes)
   Sd = sd(las2_FSCW_FSCH_facs_moxi[[i]]$sizes)
   N = nrow(las2_FSCW_FSCH_facs_moxi[[i]])
   lower = quantile(las2_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.05)
   upper = quantile(las2_FSCW_FSCH_facs_moxi[[i]]$sizes, 0.95)  
-  writeLines(sprintf("2, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper, N))  
+  writeLines(sprintf("%d, 2, %.2f, %.2f, %.2f, %.2f, %d", i, Mean, Sd, lower, upper, N))  
   las2_FSCW_FSCH_facs_moxi[[i]]$mean.size = Mean
   las2_FSCW_FSCH_facs_moxi[[i]]$sd.size = Sd
   
@@ -533,11 +474,31 @@ for (i in 1:4){
   N = nrow(las2_SSCW_SSCH_facs_moxi[[i]])
   lower = quantile(las2_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.05)
   upper = quantile(las2_SSCW_SSCH_facs_moxi[[i]]$sizes, 0.95)    
-  writeLines(sprintf("2, %.2f, %.2f, %.2f, %.2f, %d", Mean, Sd, lower, upper,  N))  
+  writeLines(sprintf("%d, 2, %.2f, %.2f, %.2f, %.2f, %d", i, Mean, Sd, lower, upper,  N))  
   las2_SSCW_SSCH_facs_moxi[[i]]$mean.size = Mean
   las2_SSCW_SSCH_facs_moxi[[i]]$sd.size = Sd
 }
 ```
+```
+Settings, Mean, Sd, lower, upper, N.cells
+1, 15.50, 1.30, 13.57, 17.88, 18854
+1, 15.87, 1.41, 13.83, 18.12, 13223
+2, 20.31, 1.72, 17.68, 23.26, 20633
+2, 16.62, 1.41, 14.48, 18.75, 29286
+1, 18.56, 1.75, 15.80, 21.56, 22271
+1, 17.86, 1.54, 15.36, 20.14, 29180
+2, 20.15, 1.89, 16.81, 23.00, 25977
+2, 18.73, 1.76, 15.61, 21.25, 35406
+1, 18.32, 1.75, 15.21, 20.93, 29279
+1, 18.21, 1.54, 15.88, 20.58, 18878
+2, 17.22, 1.36, 15.09, 19.24, 28585
+2, 18.54, 1.58, 16.15, 20.85, 13880
+1, 17.78, 1.28, 15.81, 19.84, 20759
+1, 20.67, 1.92, 17.68, 24.03, 29074
+2, 16.63, 1.45, 14.41, 19.02, 19739
+2, 21.58, 2.07, 18.18, 24.94, 12875
+```
+
 
 ```{r}
 las1_full.withmoxiz = rbind(
